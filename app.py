@@ -1,0 +1,13 @@
+# app.py
+from flask import Flask
+import os
+
+app = Flask(__name__)
+
+@app.route('/')
+def hello():
+    return "✅ 恭喜！你的智能构建项目已成功运行在 Docker 容器中！"
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
