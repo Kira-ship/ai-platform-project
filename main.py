@@ -10,7 +10,7 @@ from typing import Dict, List, Any, Optional
 app = FastAPI(
     title="运行验证接口（MCP协议适配版）",
     version="1.0",
-    description="对接MCP协议，支持flake8/mypy/bandit全检测"
+    description="对接MCP协议，支持flake8/mypy/bandit全检测。"
 )
 docker_client = docker.from_env()
 
