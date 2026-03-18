@@ -1,0 +1,55 @@
+# 工作流名称
+name: 代码安全自动化检测
+
+# 触发条件：push代码到main分支、提交PR到main分支时触发
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# 任务定义
+jobs:
+  code-security-check:
+    # 运行环境：Ubuntu最新版
+    runs-on: ubuntu-latest
+    
+    # 任务步骤
+    steps:
+      # 步骤1：拉取仓库代码
+      - name: 拉取代码
+        uses: actions/checkout@v4
+      
+      # 步骤2：配置Python环境（和你本地一致的3.9版本）
+      - name: 配置Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      
+      # 步骤3：安装检测工具
+      - name: 安装flake8/mypy/bandit
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 mypy bandit
+      
+      # 步骤4：执行flake8检测（代码风格）
+      - name: 执行flake8检测
+        run: flake8 main.py --format=json > flake8-report.json || true
+      
+      # 步骤5：执行mypy检测（类型注解）
+      - name: 执行mypy检测
+        run: mypy main.py --json-report mypy-report || true
+      
+      # 步骤6：执行bandit检测（安全漏洞）
+      - name: 执行bandit检测
+        run: bandit -f json -o bandit-report.json main.py || true
+      
+      # 步骤7：上传检测报告（方便团队查看）
+      - name: 上传检测报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            flake8-report.json
+            mypy-report/
+            bandit-report.json
