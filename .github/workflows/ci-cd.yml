@@ -1,47 +1,52 @@
-name: Auto Env Build & Security Scan
+name: CI/CD Pipeline (No AWS)
 
 on:
   push:
-    paths:
-      - 'backend/**'
-      - 'infra/scripts/**'
-      - 'security/**'
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  # 镜像名称：ghcr.io/你的用户名/仓库名/backend
+  IMAGE_NAME: ${{ github.repository }}/backend
 
 jobs:
-  build-and-scan:
+  build-and-push:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+    permissions:
+      contents: read
+      packages: write  # 必须拥有写入包的权限
 
-      - name: Generate Dockerfile (喻冬星的核心脚本)
-        run: python infra/scripts/generate_dockerfile.py
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+      # 🔑 核心：登录 GitHub 自带的镜像仓库 (无需 AWS Key)
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          docker build -t $ECR_REGISTRY/my-dachuang-backend:$IMAGE_TAG ./backend
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            latest
 
-      - name: Run Security Scan (配合赵崭)
-        run: |
-          # 在容器内运行 bandit/flake8
-          docker run --rm $ECR_REGISTRY/my-dachuang-backend:$IMAGE_TAG pip install bandit flake8
-          docker run --rm $ECR_REGISTRY/my-dachuang-backend:$IMAGE_TAG bandit -r . || echo "⚠️ 安全警告"
-
-      - name: Push to ECR
-        if: github.ref == 'refs/heads/main'
-        run: |
-          docker push $ECR_REGISTRY/my-dachuang-backend:$IMAGE_TAG
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend  # 指定构建上下文为 backend 文件夹
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
