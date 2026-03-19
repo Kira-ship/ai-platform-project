@@ -2,10 +2,8 @@ version: '3.8'
 
 services:
   backend:
-    # 这里填写你 GitHub 仓库对应的镜像地址
-    # 格式：ghcr.io/你的GitHub用户名/你的仓库名/backend:latest
     image: ghcr.io/Kira-ship/ai-platform-project/backend:latest
-    container_name: fanfu-backend-app
+    container_name: fanfu-backend
     restart: always
     ports:
       - "5000:5000"
@@ -17,3 +15,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
