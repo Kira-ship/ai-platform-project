@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  backend:
+    # 这里填写你 GitHub 仓库对应的镜像地址
+    # 格式：ghcr.io/你的GitHub用户名/你的仓库名/backend:latest
+    image: ghcr.io/Kira-ship/ai-platform-project/backend:latest
+    container_name: fanfu-backend-app
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      - APP_NAME=FanFuBackendService
+      - DEBUG=False
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
