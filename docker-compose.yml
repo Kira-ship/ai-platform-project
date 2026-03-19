@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   backend:
-    image: ghcr.io/Kira-ship/ai-platform-project/backend:latest
+    image: ghcr.io/kira-ship/ai-platform-project/backend:latest
     container_name: fanfu-backend
     restart: always
     ports:
