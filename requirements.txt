@@ -1,5 +1,0 @@
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-pydantic>=2.0.0
-# 如果需要调用外部脚本或处理文件，可能还需要
-# python-dotenv>=1.0.0
