@@ -1,137 +1,198 @@
 #!/usr/bin/env python3
 """
-Dockerfile 动态生成器
+Dockerfile 动态生成器 (增强版)
 用于解析 backend/ 目录下的 requirements.txt 和 app.py，
 自动生成优化的生产级 Dockerfile。
+
+功能特点:
+- 自动检测 Gunicorn/Uvicorn/Flask
+- 智能端口推断
+- 非 Root 用户安全运行
+- 支持 CLI 参数定制
 """
 
 import os
 import re
 import sys
 import logging
+import argparse
 from pathlib import Path
+from typing import Optional, Dict, List
 
 # 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
-def parse_requirements(req_path: str) -> dict:
+def parse_requirements(req_path: str) -> Dict:
     """解析 requirements.txt，提取关键依赖信息"""
     deps = {
         'has_gunicorn': False,
+        'has_uvicorn': False,
         'has_flask': False,
         'raw_lines': []
     }
     
     if not os.path.exists(req_path):
-        logger.error(f"找不到依赖文件: {req_path}")
+        logger.error(f"❌ 找不到依赖文件: {req_path}")
         return deps
 
+    logger.info(f"📄 正在解析依赖文件: {req_path}")
     with open(req_path, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
             deps['raw_lines'].append(line)
-            pkg_name = re.split(r'[>=<]', line)[0].lower()
+            
+            # 提取包名 (处理 ==, >=, <=, ~= 等情况)
+            pkg_name = re.split(r'[=<>~!]', line)[0].lower().strip()
             
             if pkg_name == 'gunicorn':
                 deps['has_gunicorn'] = True
+            elif pkg_name == 'uvicorn':
+                deps['has_uvicorn'] = True
             elif pkg_name == 'flask':
                 deps['has_flask'] = True
                 
     return deps
 
 def parse_app_port(app_path: str) -> int:
-    """尝试从 app.py 中解析 Flask 运行的端口"""
-    default_port = 8000 # 生产环境默认端口
+    """尝试从 app.py 中解析运行端口"""
+    default_port = 8000 
     
     if not os.path.exists(app_path):
-        logger.warning(f"找不到应用文件: {app_path}, 使用默认端口 {default_port}")
+        logger.warning(f"⚠️ 找不到应用入口文件: {app_path}, 将使用默认端口 {default_port}")
         return default_port
 
     with open(app_path, 'r', encoding='utf-8') as f:
         content = f.read()
         
-    # 正则匹配 app.run(..., port=XXXX, ...)
-    # 匹配模式：port= 5000 或 port=5000
-    match = re.search(r'app\.run\s*\([^)]*port\s*=\s*(\d+)', content)
-    if match:
-        port = int(match.group(1))
-        logger.info(f"从代码中检测到 Flask 开发端口: {port}")
-        # 注意：生产环境 Gunicorn 通常不使用开发端口，这里仅做记录或逻辑判断
-        # 为了安全规范，我们强制返回 8000，除非有特殊逻辑需要保留原端口
-        return 8000 
+    patterns = [
+        r'app\.run\s*\([^)]*port\s*=\s*(\d+)',          # Flask: app.run(port=5000)
+        r'uvicorn\.run\s*\([^)]*port\s*=\s*(\d+)',      # Uvicorn: uvicorn.run(..., port=8000)
+        r'context\.run\s*\([^)]*port\s*=\s*(\d+)',      # 其他常见模式
+    ]
     
-    logger.info(f"未检测到显式端口配置，使用生产默认端口: {default_port}")
+    for pattern in patterns:
+        match = re.search(pattern, content)
+        if match:
+            port = int(match.group(1))
+            logger.info(f"🔍 从代码中检测到端口配置: {port}")
+            # 生产环境建议统一使用 8000 或 5000，这里我们尊重代码配置，但给出提示
+            return port
+    
+    logger.info(f"ℹ️ 未检测到显式端口配置，使用生产默认端口: {default_port}")
     return default_port
 
-def generate_dockerfile_content(has_gunicorn: bool, target_port: int) -> str:
+def determine_startup_cmd(has_gunicorn: bool, has_uvicorn: bool, has_flask: bool, port: int) -> str:
+    """根据依赖决定启动命令"""
+    
+    # 优先级: Gunicorn (Flask/Django) > Uvicorn (FastAPI) > Python Direct
+    if has_gunicorn:
+        logger.info("✅ 检测到 Gunicorn，将使用生产级启动命令")
+        return f'CMD ["gunicorn", "--workers", "4", "--threads", "2", "--bind", "0.0.0.0:{port}", "app:app"]'
+    
+    elif has_uvicorn:
+        logger.info("✅ 检测到 Uvicorn，将使用 ASGI 启动命令")
+        # 假设入口是 app:app 或 main:app，这里默认 app:app，实际可能需要更复杂的解析
+        return f'CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "{port}"]'
+    
+    else:
+        logger.warning("⚠️ 未检测到 Gunicorn 或 Uvicorn。")
+        logger.warning("   生成的 Dockerfile 将使用 'python app.py' (仅适合开发/测试)。")
+        logger.warning("   🚨 生产环境强烈建议安装 gunicorn 或 uvicorn！")
+        return f'CMD ["python", "app.py"]'
+
+def generate_dockerfile_content(target_port: int, startup_cmd: str, base_image: str = "python:3.11-slim") -> str:
     """生成 Dockerfile 字符串内容"""
     
-    # 如果没有 gunicorn，给出警告提示（但在生成时仍假设用户会安装或手动处理）
-    startup_cmd = f'CMD ["gunicorn", "--workers", "4", "--bind", "0.0.0.0:{target_port}", "app:app"]'
-    
-    if not has_gunicorn:
-        logger.warning("⚠️  warnings: requirements.txt 中未检测到 'gunicorn'。")
-        logger.warning("   生成的 Dockerfile 将尝试使用 gunicorn，构建可能会失败。")
-        logger.warning("   建议在 requirements.txt 中添加 'gunicorn>=20.1.0'")
-        # 备选方案：如果确实没有 gunicorn，只能退回到 flask run (不推荐生产环境)
-        # startup_cmd = f'CMD ["python", "app.py"]' 
+    dockerfile_template = f"""# 🤖 自动生成的 Dockerfile
+# 基础镜像：{base_image}
+# 暴露端口：{target_port}
 
-    dockerfile_template = f"""# 自动生成的 Dockerfile
-# 生成时间: 由 generate_dockerfile.py 动态生成
-# 基础镜像：Python 3.11 Slim
-FROM python:3.11-slim
+FROM {base_image}
 
 # 设置工作目录
 WORKDIR /app
 
 # 环境变量配置
+# PYTHONDONTWRITEBYTECODE: 防止生成 .pyc 文件
+# PYTHONUNBUFFERED: 确保日志实时输出到 stdout
 ENV PYTHONDONTWRITEBYTECODE=1 \\
     PYTHONUNBUFFERED=1 \\
-    APP_NAME="MyBackendApp" \\
-    DEBUG="False"
+    APP_ENV="production" \\
+    PORT="{target_port}"
 
-# 1. 复制依赖文件以利用缓存
+# 1. 安装系统级依赖 (如果需要编译 C 扩展，请取消下面注释)
+# RUN apt-get update && apt-get install -y --no-install-recommends gcc python3-dev && rm -rf /var/lib/apt/lists/*
+
+# 2. 复制依赖文件以利用 Docker 层缓存
 COPY requirements.txt .
 
-# 2. 安装依赖
-# 如果需要在 slim 镜像中编译 C 扩展，请取消下面注释
-# RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir -r requirements.txt
+# 3. 安装 Python 依赖
+RUN pip install --no-cache-dir --upgrade pip && \\
+    pip install --no-cache-dir -r requirements.txt
 
-# 3. 复制源代码
+# 4. 复制源代码
+# 注意：此时还是以 root 身份复制
 COPY . .
 
-# 4. 安全加固：创建非 root 用户
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+# 5. 安全加固：创建非 root 用户并赋予权限
+# 创建用户 appuser (UID 1000)
+RUN useradd -m -u 1000 appuser
+# 修改应用目录所有权
+RUN chown -R appuser:appuser /app
+# 切换到非 root 用户
 USER appuser
 
-# 5. 暴露端口
+# 6. 暴露端口
 EXPOSE {target_port}
 
-# 6. 健康检查 (假设 /health 接口存在)
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \\
+# 7. 健康检查
+# 使用 python 内置库进行轻量级检查，避免安装 curl 增加镜像体积
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \\
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:{target_port}/health')" || exit 1
 
-# 7. 启动命令
+# 8. 启动命令
 {startup_cmd}
 """
     return dockerfile_template
 
 def main():
-    # 定义路径 (相对于脚本所在位置的上级目录结构)
-    # 假设脚本在 infra/scripts/, 项目在根目录
-    script_dir = Path(__file__).parent
-    project_root = script_dir.parent.parent # 回到 my-dachuang-test/
+    parser = argparse.ArgumentParser(description="动态生成优化的 Dockerfile")
+    parser.add_argument("--write", action="store_true", help="直接写入文件而不是打印到屏幕")
+    parser.add_argument("--output", type=str, default=None, help="指定输出文件路径 (默认: backend/Dockerfile)")
+    parser.add_argument("--base-image", type=str, default="python:3.11-slim", help="指定基础镜像 (默认: python:3.11-slim)")
+    parser.add_argument("--backend-dir", type=str, default=None, help="指定 backend 目录路径 (默认: 自动推断)")
     
-    backend_dir = project_root / "backend"
+    args = parser.parse_args()
+
+    # 路径推断逻辑
+    script_dir = Path(__file__).parent.resolve()
+    
+    if args.backend_dir:
+        backend_dir = Path(args.backend_dir).resolve()
+        project_root = backend_dir.parent
+    else:
+        # 默认假设脚本在 infra/scripts/, backend 在项目根目录的 backend/
+        project_root = script_dir.parent.parent 
+        backend_dir = project_root / "backend"
+    
     req_file = backend_dir / "requirements.txt"
     app_file = backend_dir / "app.py"
-    output_file = backend_dir / "Dockerfile"
+    output_file = Path(args.output) if args.output else backend_dir / "Dockerfile"
 
-    logger.info(f"🔍 正在分析项目结构: {project_root}")
+    logger.info(f"🚀 开始分析项目...")
+    logger.info(f"📂 项目根目录: {project_root}")
+    logger.info(f"📂 Backend 目录: {backend_dir}")
+
+    if not backend_dir.exists():
+        logger.error(f"❌ Backend 目录不存在: {backend_dir}")
+        sys.exit(1)
 
     # 1. 解析依赖
     deps = parse_requirements(str(req_file))
@@ -139,19 +200,36 @@ def main():
     # 2. 解析端口
     port = parse_app_port(str(app_file))
     
-    # 3. 生成内容
-    content = generate_dockerfile_content(deps['has_gunicorn'], port)
+    # 3. 确定启动命令
+    startup_cmd = determine_startup_cmd(
+        deps['has_gunicorn'], 
+        deps['has_uvicorn'], 
+        deps['has_flask'], 
+        port
+    )
     
-    # 4. 输出策略
-    # 如果有输出文件参数，则写入文件，否则打印到 stdout
-    if len(sys.argv) > 1 and sys.argv[1] == "--write":
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(content)
-        logger.info(f"✅ Dockerfile 已成功生成并保存至: {output_file}")
+    # 4. 生成内容
+    content = generate_dockerfile_content(port, startup_cmd, args.base_image)
+    
+    # 5. 输出策略
+    if args.write:
+        try:
+            # 确保输出目录存在
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+            logger.info(f"✅ 成功! Dockerfile 已保存至: {output_file}")
+        except Exception as e:
+            logger.error(f"❌ 写入文件失败: {e}")
+            sys.exit(1)
     else:
-        # 默认打印到屏幕，方便预览或重定向
+        print("\n" + "="*50)
+        print("📄 生成的 Dockerfile 预览:")
+        print("="*50 + "\n")
         print(content)
-        logger.info("💡 提示: 使用 '--write' 参数直接将结果保存为 backend/Dockerfile")
+        print("="*50)
+        logger.info("💡 提示: 添加 '--write' 参数直接保存文件。")
+        logger.info(f"   示例: python {sys.argv[0]} --write")
 
 if __name__ == "__main__":
     main()
