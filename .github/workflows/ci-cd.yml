@@ -7,7 +7,8 @@ on:
     branches: [ main ]
 
 env:
-  # 定义镜像名称，格式：ghcr.io/用户名/仓库名/服务名
+  # 🔑 关键修复：将仓库名转为小写（Docker 镜像名必须小写）
+  REPO_LOWER: ${{ github.repository_owner }}/${{ github.event.repository.name }}
   IMAGE_NAME: ${{ github.repository_owner }}/${{ github.event.repository.name }}/backend
 
 jobs:
@@ -15,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write  # 必须拥有写入包的权限才能推送到 GHCR
+      packages: write
 
     steps:
       - name: Checkout code
@@ -24,8 +25,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 🔑 核心步骤：登录 GitHub Container Registry
-      # 不需要任何 Secrets，直接使用 GITHUB_TOKEN
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -37,7 +36,8 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ env.IMAGE_NAME }}
+          # 🔑 关键修复：使用小写镜像名
+          images: ghcr.io/${{ env.REPO_LOWER }}/backend
           tags: |
             type=sha,prefix=
             type=ref,event=branch
@@ -54,12 +54,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # 可选：部署步骤 (如果你有一台自己的服务器或本地机器作为 Runner)
-   # ✅ 修改后的部署步骤（使用 GitHub 免费机器演示）
   deploy-local:
     needs: build-and-push
-    runs-on: ubuntu-latest  # 🔴 改这里：从 self-hosted 改为 ubuntu-latest
-    # if: github.ref == 'refs/heads/main'  # 🟡 暂时注释掉，方便测试所有分支
+    runs-on: ubuntu-latest
     
     steps:
       - name: Checkout code
@@ -69,27 +66,30 @@ jobs:
         run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Pull latest image
-        run: docker pull ghcr.io/${{ env.IMAGE_NAME }}:latest
-
-      # 🟡 删除了 "Stop old container" 步骤，因为每次都是全新环境
+        run: |
+          # 🔑 关键修复：转小写后拉取
+          IMAGE_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')/backend
+          echo "Pulling: ghcr.io/$IMAGE_NAME:latest"
+          docker pull ghcr.io/$IMAGE_NAME:latest
 
       - name: Run new container
         run: |
+          IMAGE_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')/backend
           docker run -d \
             --name my-backend-app \
             -p 5000:5000 \
             -e APP_NAME="DemoApp" \
             -e DEBUG=True \
-            ghcr.io/${{ env.IMAGE_NAME }}:latest
+            ghcr.io/$IMAGE_NAME:latest
 
       - name: Wait for service to start
-        run: sleep 15  # 给容器更多启动时间
+        run: sleep 15
 
       - name: Health Check (验证后端是否跑通)
         run: |
           echo "Testing backend at http://localhost:5000..."
           curl -f http://localhost:5000/ || curl -f http://localhost:5000/health || curl -f http://localhost:5000/api/status || echo "尝试访问根路径..."
-          curl -v http://localhost:5000/  # 详细输出，方便调试
+          curl -v http://localhost:5000/
 
       - name: Show Running Containers
         run: docker ps
