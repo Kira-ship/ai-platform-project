@@ -8,7 +8,7 @@ on:
 
 env:
   # 定义镜像名称，格式：ghcr.io/用户名/仓库名/服务名
-  IMAGE_NAME: ${{ github.repository }}/backend
+  IMAGE_NAME: ${{ github.repository_owner }}/${{ github.event.repository.name }}/backend
 
 jobs:
   build-and-push:
