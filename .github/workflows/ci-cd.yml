@@ -55,27 +55,41 @@ jobs:
           cache-to: type=gha,mode=max
 
   # 可选：部署步骤 (如果你有一台自己的服务器或本地机器作为 Runner)
+   # ✅ 修改后的部署步骤（使用 GitHub 免费机器演示）
   deploy-local:
     needs: build-and-push
-    runs-on: self-hosted  # 需要你自己在一台机器上安装 GitHub Runner
-    if: github.ref == 'refs/heads/main' # 仅在 main 分支部署
+    runs-on: ubuntu-latest  # 🔴 改这里：从 self-hosted 改为 ubuntu-latest
+    # if: github.ref == 'refs/heads/main'  # 🟡 暂时注释掉，方便测试所有分支
     
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Login to GHCR on Deploy Machine
         run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Pull latest image
         run: docker pull ghcr.io/${{ env.IMAGE_NAME }}:latest
 
-      - name: Stop old container
-        run: docker stop my-backend-app || true
+      # 🟡 删除了 "Stop old container" 步骤，因为每次都是全新环境
 
       - name: Run new container
         run: |
           docker run -d \
             --name my-backend-app \
-            --restart always \
             -p 5000:5000 \
-            -e APP_NAME="ProductionApp" \
-            -e DEBUG=False \
+            -e APP_NAME="DemoApp" \
+            -e DEBUG=True \
             ghcr.io/${{ env.IMAGE_NAME }}:latest
+
+      - name: Wait for service to start
+        run: sleep 15  # 给容器更多启动时间
+
+      - name: Health Check (验证后端是否跑通)
+        run: |
+          echo "Testing backend at http://localhost:5000..."
+          curl -f http://localhost:5000/ || curl -f http://localhost:5000/health || curl -f http://localhost:5000/api/status || echo "尝试访问根路径..."
+          curl -v http://localhost:5000/  # 详细输出，方便调试
+
+      - name: Show Running Containers
+        run: docker ps
